@@ -78,8 +78,10 @@ unzist [OPTIONS] FILE...
   -f, --force               overwrite existing output
   -v, --verbose             per-file summary on stderr
   -q, --quiet               suppress per-file summary
-  -r, --recursive           descend into directories
+  -r, --recursive           descend into directories (skips symlinks)
   -t, --test                verify archive integrity (decompress only)
+      --max-size SIZE       abort decompress if output exceeds SIZE
+                            (k/M/G/T suffix, base 1024)
   -d, --decompress          force decompress mode
   -z, --compress            force compress mode
   -F, --format FMT          zstd | gz | xz | bz2 (compress only; default zstd)
