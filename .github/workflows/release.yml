@@ -76,7 +76,11 @@ jobs:
           done
           tar -czf "$ARCHIVE_NAME" "$dir"
           cp "$ARCHIVE_NAME" "$STABLE_NAME"
-          shasum -a 256 "$ARCHIVE_NAME" "$STABLE_NAME" > "${ARCHIVE_NAME}.sha256"
+          # One .sha256 per archive, each referencing only its matching file,
+          # so `shasum -c <name>.sha256` works after downloading either the
+          # versioned or the stable URL on its own.
+          shasum -a 256 "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
+          shasum -a 256 "$STABLE_NAME"  > "${STABLE_NAME}.sha256"
 
       - name: Stage Windows release archive
         if: matrix.package_kind == 'zip'
@@ -90,11 +94,11 @@ jobs:
           }
           Compress-Archive -Path $dir -DestinationPath $env:ARCHIVE_NAME -Force
           Copy-Item $env:ARCHIVE_NAME -Destination $env:STABLE_NAME
-          $hashes = @($env:ARCHIVE_NAME, $env:STABLE_NAME) | ForEach-Object {
-            $h = (Get-FileHash -Algorithm SHA256 $_).Hash.ToLower()
-            "$h  $_"
+          # One .sha256 per archive (shasum-compatible "<hex>  <filename>").
+          foreach ($name in $env:ARCHIVE_NAME, $env:STABLE_NAME) {
+            $h = (Get-FileHash -Algorithm SHA256 $name).Hash.ToLower()
+            "$h  $name" | Set-Content -Encoding ascii "$name.sha256"
           }
-          $hashes -join "`n" | Set-Content -Encoding ascii "$($env:ARCHIVE_NAME).sha256"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -103,6 +107,7 @@ jobs:
             ${{ env.ARCHIVE_NAME }}
             ${{ env.STABLE_NAME }}
             ${{ env.ARCHIVE_NAME }}.sha256
+            ${{ env.STABLE_NAME }}.sha256
 
   publish:
     needs: build
