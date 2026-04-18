@@ -95,6 +95,9 @@ GitHub Actions builds and tests native binaries for:
 Tagging `v*` publishes archives containing `zist`, `unzist`, `README.md`, and
 `LICENSE`.
 
+Download prebuilt binaries from the GitHub Releases page:
+<https://github.com/maphew/zist/releases>
+
 ### Windows
 
 The default MSVC toolchain needs Visual Studio Build Tools with the Windows
