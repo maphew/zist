@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod format;
-pub mod naming;
 pub mod io;
+pub mod naming;

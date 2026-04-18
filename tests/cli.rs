@@ -1,24 +1,9 @@
 use std::fs;
-use std::path::PathBuf;
 
 use assert_cmd::Command;
 use tempfile::tempdir;
 
 const PAYLOAD: &[u8] = b"hello cli world\nhello cli world\nhello cli world\n";
-
-fn zist_bin() -> PathBuf {
-    assert_cmd::cargo::cargo_bin("zist")
-}
-
-/// Copy the binary to a peer path named `unzist` so we exercise the real
-/// argv[0] dispatch on every OS (including Windows, where symlinks need perms).
-fn make_unzist_peer(dir: &std::path::Path) -> PathBuf {
-    let src = zist_bin();
-    let name = if cfg!(windows) { "unzist.exe" } else { "unzist" };
-    let dst = dir.join(name);
-    fs::copy(&src, &dst).unwrap();
-    dst
-}
 
 // ---- baseline round-trip ----
 
@@ -34,8 +19,7 @@ fn compress_and_decompress_via_argv0() {
     assert!(compressed.exists());
     assert!(!src.exists());
 
-    let unzist = make_unzist_peer(dir.path());
-    Command::new(&unzist).arg(&compressed).assert().success();
+    Command::cargo_bin("unzist").unwrap().arg(&compressed).assert().success();
 
     assert!(!compressed.exists());
     assert_eq!(fs::read(&src).unwrap(), PAYLOAD);
@@ -171,8 +155,7 @@ fn test_flag_passes_valid_archive() {
     Command::cargo_bin("zist").unwrap().arg(&src).assert().success();
     let compressed = dir.path().join("a.txt.zst");
 
-    let unzist = make_unzist_peer(dir.path());
-    Command::new(&unzist).arg("-t").arg(&compressed).assert().success();
+    Command::cargo_bin("unzist").unwrap().arg("-t").arg(&compressed).assert().success();
     assert!(compressed.exists(), "-t must not remove the file");
 }
 
@@ -194,8 +177,7 @@ fn test_flag_fails_on_corrupted_archive() {
     bytes[i] ^= 0xFF;
     fs::write(&compressed, &bytes).unwrap();
 
-    let unzist = make_unzist_peer(dir.path());
-    Command::new(&unzist).arg("-t").arg(&compressed).assert().failure();
+    Command::cargo_bin("unzist").unwrap().arg("-t").arg(&compressed).assert().failure();
 }
 
 #[test]
@@ -281,9 +263,8 @@ fn compress_override_on_unzist() {
     let src = dir.path().join("a.txt");
     fs::write(&src, PAYLOAD).unwrap();
 
-    let unzist = make_unzist_peer(dir.path());
     // `unzist -z` should behave like zist.
-    Command::new(&unzist).arg("-z").arg(&src).assert().success();
+    Command::cargo_bin("unzist").unwrap().arg("-z").arg(&src).assert().success();
     assert!(dir.path().join("a.txt.zst").exists());
 }
 
@@ -320,4 +301,98 @@ fn recursive_flag_compresses_tree() {
     assert!(sub.join("y.txt.zst").exists());
     assert!(sub.join("inner").join("z.txt.zst").exists());
     assert!(!sub.join("x.txt").exists());
+}
+
+#[test]
+fn gzist_defaults_to_gzip() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("a.txt");
+    fs::write(&src, PAYLOAD).unwrap();
+
+    Command::cargo_bin("gzist").unwrap().arg(&src).assert().success();
+
+    let out = dir.path().join("a.txt.gz");
+    assert!(out.exists());
+    assert_eq!(&fs::read(&out).unwrap()[..2], &[0x1F, 0x8B]);
+}
+
+#[test]
+fn xzist_defaults_to_xz() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("a.txt");
+    fs::write(&src, PAYLOAD).unwrap();
+
+    Command::cargo_bin("xzist").unwrap().arg(&src).assert().success();
+
+    let out = dir.path().join("a.txt.xz");
+    assert!(out.exists());
+    assert_eq!(&fs::read(&out).unwrap()[..6], &[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]);
+}
+
+#[test]
+fn bzist_defaults_to_bz2() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("a.txt");
+    fs::write(&src, PAYLOAD).unwrap();
+
+    Command::cargo_bin("bzist").unwrap().arg(&src).assert().success();
+
+    let out = dir.path().join("a.txt.bz2");
+    assert!(out.exists());
+    assert_eq!(&fs::read(&out).unwrap()[..3], b"BZh");
+}
+
+#[test]
+fn explicit_format_overrides_argv0_hint() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("a.txt");
+    fs::write(&src, PAYLOAD).unwrap();
+
+    // gzist invoked with --format xz must produce xz, not gzip.
+    Command::cargo_bin("gzist")
+        .unwrap()
+        .args(["--format", "xz"])
+        .arg(&src)
+        .assert()
+        .success();
+
+    assert!(dir.path().join("a.txt.xz").exists());
+    assert!(!dir.path().join("a.txt.gz").exists());
+}
+
+#[test]
+fn glob_pattern_expands_matches_only() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("a.txt"), PAYLOAD).unwrap();
+    fs::write(dir.path().join("b.txt"), PAYLOAD).unwrap();
+    fs::write(dir.path().join("c.md"), PAYLOAD).unwrap();
+
+    Command::cargo_bin("zist")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("*.txt")
+        .assert()
+        .success();
+
+    assert!(dir.path().join("a.txt.zst").exists());
+    assert!(dir.path().join("b.txt.zst").exists());
+    assert!(!dir.path().join("a.txt").exists());
+    assert!(!dir.path().join("b.txt").exists());
+    assert!(dir.path().join("c.md").exists());
+    assert!(!dir.path().join("c.md.zst").exists());
+}
+
+#[test]
+fn glob_with_no_matches_errors_per_file() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("keep.txt"), PAYLOAD).unwrap();
+
+    Command::cargo_bin("zist")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("*.nope")
+        .assert()
+        .failure();
+
+    assert!(dir.path().join("keep.txt").exists());
 }
