@@ -43,6 +43,7 @@ struct Cli {
     recursive: bool,
     help: bool,
     version: bool,
+    max_size: Option<u64>,
     files: Vec<PathBuf>,
 }
 
@@ -103,7 +104,11 @@ fn run(argv0: &OsString, args: &[OsString]) -> Result<(), u8> {
 fn process_one(path: &Path, mode: Mode, cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     // -c implies -k (source never removed).
     let keep = cli.keep || cli.stdout;
-    let opts = Options { keep, force: cli.force };
+    let opts = Options {
+        keep,
+        force: cli.force,
+        max_decompressed: cli.max_size,
+    };
 
     match mode {
         Mode::Compress => {
@@ -130,7 +135,7 @@ fn process_one(path: &Path, mode: Mode, cli: &Cli) -> Result<(), Box<dyn std::er
             } else if cli.stdout {
                 let stdout = io::stdout();
                 let mut lock = stdout.lock();
-                let fmt = decompress_to_writer(path, &mut lock)?;
+                let fmt = decompress_to_writer(path, &mut lock, cli.max_size)?;
                 if cli.verbose {
                     eprintln!("{} [{fmt}] -> <stdout>", path.display());
                 }
@@ -202,7 +207,12 @@ fn expand_recursive(inputs: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 fn walk_into(p: &Path, acc: &mut Vec<PathBuf>) {
-    match fs::metadata(p) {
+    // symlink_metadata (not metadata) so a planted symlink cannot redirect
+    // recursion out of the requested tree. Symlinks encountered during descent
+    // are skipped entirely — the user can still compress a symlink by naming
+    // it explicitly on the command line.
+    match fs::symlink_metadata(p) {
+        Ok(m) if m.file_type().is_symlink() => {}
         Ok(m) if m.is_dir() => match fs::read_dir(p) {
             Ok(entries) => {
                 let mut children: Vec<_> = entries.flatten().map(|e| e.path()).collect();
@@ -280,6 +290,10 @@ fn parse_long(
             let v = take_value(name, attached, it)?;
             cli.level = Some(v.parse().map_err(|_| err("--level must be an integer"))?);
         }
+        "max-size" => {
+            let v = take_value(name, attached, it)?;
+            cli.max_size = Some(parse_size(&v).map_err(|msg| err(&msg))?);
+        }
         other => return Err(err(&format!("unknown option: --{other}"))),
     }
     Ok(())
@@ -339,6 +353,29 @@ fn take_value(
     }
 }
 
+/// Parse a byte size like `100`, `10k`, `512M`, `2G`. Base 1024, suffix
+/// case-insensitive. Returns a human-readable error message.
+fn parse_size(s: &str) -> std::result::Result<u64, String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err("--max-size requires a value".into());
+    }
+    let bytes = trimmed.as_bytes();
+    let (digits, mul) = match bytes[bytes.len() - 1] {
+        b'k' | b'K' => (&trimmed[..trimmed.len() - 1], 1024u64),
+        b'm' | b'M' => (&trimmed[..trimmed.len() - 1], 1024u64 * 1024),
+        b'g' | b'G' => (&trimmed[..trimmed.len() - 1], 1024u64 * 1024 * 1024),
+        b't' | b'T' => (&trimmed[..trimmed.len() - 1], 1024u64 * 1024 * 1024 * 1024),
+        _ => (trimmed, 1u64),
+    };
+    let n: u64 = digits
+        .trim()
+        .parse()
+        .map_err(|_| format!("--max-size: invalid size `{s}`"))?;
+    n.checked_mul(mul)
+        .ok_or_else(|| format!("--max-size: value too large: `{s}`"))
+}
+
 fn err(msg: &str) -> u8 {
     eprintln!("error: {msg}");
     2
@@ -371,6 +408,8 @@ fn print_help(mode: Mode, prog: &str, default_fmt: Format) {
              \x20 -c, --stdout                     write to stdout, keep source\n\
              \x20 -f, --force                      overwrite existing output\n\
              \x20 -t, --test                       verify integrity; never writes output\n\
+             \x20     --max-size SIZE             abort if decompressed output exceeds SIZE\n\
+             \x20                                  (accepts k/M/G/T suffix, base 1024)\n\
              \x20 -v, --verbose                    emit per-file summary on stderr\n\
              \x20 -q, --quiet                      suppress per-file summary\n\
              \x20 -r, --recursive                  descend directories\n\
@@ -378,5 +417,98 @@ fn print_help(mode: Mode, prog: &str, default_fmt: Format) {
              \x20 -h, --help                       show this help\n\
              \x20 -V, --version                    print version\n"
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_size_plain_bytes() {
+        assert_eq!(parse_size("0").unwrap(), 0);
+        assert_eq!(parse_size("1024").unwrap(), 1024);
+    }
+
+    #[test]
+    fn parse_size_accepts_suffixes() {
+        assert_eq!(parse_size("1k").unwrap(), 1024);
+        assert_eq!(parse_size("1K").unwrap(), 1024);
+        assert_eq!(parse_size("2m").unwrap(), 2 * 1024 * 1024);
+        assert_eq!(parse_size("3G").unwrap(), 3u64 * 1024 * 1024 * 1024);
+        assert_eq!(parse_size("1t").unwrap(), 1024u64 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_size_rejects_garbage() {
+        assert!(parse_size("").is_err());
+        assert!(parse_size("abc").is_err());
+        assert!(parse_size("1x").is_err());
+        assert!(parse_size("-5").is_err());
+    }
+
+    #[test]
+    fn parse_size_rejects_overflow() {
+        assert!(parse_size("99999999999T").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_into_skips_symlinked_directory() {
+        use std::os::unix::fs::symlink;
+        use tempfile::tempdir;
+
+        // Target dir outside the tree the user asked to recurse.
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+
+        // Tree the user named: contains a planted symlink to `outside`.
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("ok.txt"), b"ok").unwrap();
+        symlink(outside.path(), root.path().join("trap")).unwrap();
+
+        let mut acc = Vec::new();
+        walk_into(root.path(), &mut acc);
+
+        for p in &acc {
+            assert!(
+                !p.starts_with(outside.path()),
+                "walk_into followed symlink out of tree: {}",
+                p.display()
+            );
+            // No path should include the planted symlink component either —
+            // we skip it entirely during descent.
+            assert!(
+                !p.components().any(|c| c.as_os_str() == "trap"),
+                "walk_into descended through symlink: {}",
+                p.display()
+            );
+        }
+        assert!(acc.iter().any(|p| p.file_name().unwrap() == "ok.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_into_skips_symlink_to_regular_file() {
+        use std::os::unix::fs::symlink;
+        use tempfile::tempdir;
+
+        let outside = tempdir().unwrap();
+        let target = outside.path().join("target.txt");
+        fs::write(&target, b"target").unwrap();
+
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("real.txt"), b"real").unwrap();
+        symlink(&target, root.path().join("ln.txt")).unwrap();
+
+        let mut acc = Vec::new();
+        walk_into(root.path(), &mut acc);
+
+        // real.txt should be processed; ln.txt (symlink) should be skipped.
+        assert!(acc.iter().any(|p| p.file_name().unwrap() == "real.txt"));
+        assert!(
+            !acc.iter().any(|p| p.file_name().unwrap() == "ln.txt"),
+            "walk_into must not emit symlink entries during descent"
+        );
     }
 }

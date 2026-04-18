@@ -11,6 +11,7 @@ pub enum Error {
     OutputExists(PathBuf),
     UnknownFormat,
     UnsupportedFormat(Format),
+    MaxSizeExceeded(u64),
 }
 
 impl From<io::Error> for Error {
@@ -26,6 +27,9 @@ impl std::fmt::Display for Error {
             Error::OutputExists(p) => write!(f, "refusing to clobber: {}", p.display()),
             Error::UnknownFormat => write!(f, "could not identify compression format"),
             Error::UnsupportedFormat(fmt) => write!(f, "no decompressor compiled in for {fmt}"),
+            Error::MaxSizeExceeded(n) => {
+                write!(f, "decompressed output exceeded --max-size ({n} bytes)")
+            }
         }
     }
 }
@@ -40,6 +44,9 @@ pub struct Options {
     pub keep: bool,
     /// Overwrite an existing destination instead of erroring.
     pub force: bool,
+    /// Cap decompressed output; decompress paths abort past this many bytes.
+    /// Ignored on compress.
+    pub max_decompressed: Option<u64>,
 }
 
 /// Compress `src` in place. Writes `src.<suffix>`; removes `src` unless `opts.keep`.
@@ -68,7 +75,7 @@ pub fn decompress_in_place(src: &Path, opts: Options) -> Result<(PathBuf, Format
     let out_path = decompressed_path(src);
     let output = open_output(&out_path, opts.force)?;
     let input = BufReader::new(File::open(src)?);
-    if let Err(e) = decode(input, output, fmt) {
+    if let Err(e) = decode(input, output, fmt, opts.max_decompressed) {
         let _ = fs::remove_file(&out_path);
         return Err(e);
     }
@@ -90,16 +97,21 @@ pub fn compress_to_writer<W: Write>(
 }
 
 /// Stream the decompressed form of `src` into `out`. Returns the detected format.
-pub fn decompress_to_writer<W: Write>(src: &Path, out: W) -> Result<Format> {
+/// `max_decompressed` caps bytes written; pass `None` for no cap.
+pub fn decompress_to_writer<W: Write>(
+    src: &Path,
+    out: W,
+    max_decompressed: Option<u64>,
+) -> Result<Format> {
     let fmt = detect_format(src)?;
     let input = BufReader::new(File::open(src)?);
-    decode(input, out, fmt)?;
+    decode(input, out, fmt, max_decompressed)?;
     Ok(fmt)
 }
 
 /// `gzip -t` equivalent: decompress `src` into a sink and report any error.
 pub fn test_file(src: &Path) -> Result<Format> {
-    decompress_to_writer(src, io::sink())
+    decompress_to_writer(src, io::sink(), None)
 }
 
 fn detect_format(src: &Path) -> Result<Format> {
@@ -110,22 +122,24 @@ fn detect_format(src: &Path) -> Result<Format> {
 }
 
 fn open_output(path: &Path, force: bool) -> Result<BufWriter<File>> {
-    let f = if force {
-        OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(path)?
-    } else {
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map_err(|e| match e.kind() {
-                io::ErrorKind::AlreadyExists => Error::OutputExists(path.to_path_buf()),
-                _ => Error::Io(e),
-            })?
-    };
+    // --force must never follow a pre-existing symlink to truncate its target.
+    // We unlink first (remove_file removes the symlink itself, not its target)
+    // and then always use create_new, so any race loses to the new file.
+    if force {
+        match fs::symlink_metadata(path) {
+            Ok(_) => fs::remove_file(path)?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Error::Io(e)),
+        }
+    }
+    let f = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| match e.kind() {
+            io::ErrorKind::AlreadyExists => Error::OutputExists(path.to_path_buf()),
+            _ => Error::Io(e),
+        })?;
     Ok(BufWriter::new(f))
 }
 
@@ -167,7 +181,27 @@ fn encode<R: Read, W: Write>(mut input: R, output: W, fmt: Format, level: Option
     Ok(())
 }
 
-fn decode<R: Read, W: Write>(input: R, mut output: W, fmt: Format) -> Result<()> {
+fn decode<R: Read, W: Write>(
+    input: R,
+    output: W,
+    fmt: Format,
+    max_decompressed: Option<u64>,
+) -> Result<()> {
+    match max_decompressed {
+        None => decode_stream(input, output, fmt),
+        Some(limit) => {
+            let mut capped = CappedWriter::new(output, limit);
+            let res = decode_stream(input, &mut capped, fmt);
+            if capped.tripped {
+                Err(Error::MaxSizeExceeded(limit))
+            } else {
+                res
+            }
+        }
+    }
+}
+
+fn decode_stream<R: Read, W: Write>(input: R, mut output: W, fmt: Format) -> Result<()> {
     match fmt {
         Format::Zstd => {
             let mut dec = zstd::stream::read::Decoder::new(input)?;
@@ -189,6 +223,37 @@ fn decode<R: Read, W: Write>(input: R, mut output: W, fmt: Format) -> Result<()>
     }
     output.flush()?;
     Ok(())
+}
+
+/// Writer that short-circuits with an error once its byte budget is exhausted.
+/// The decoder turns any write error into a transport error, so we stash a
+/// `tripped` flag and convert it to [`Error::MaxSizeExceeded`] in [`decode`].
+struct CappedWriter<W: Write> {
+    inner: W,
+    remaining: u64,
+    tripped: bool,
+}
+
+impl<W: Write> CappedWriter<W> {
+    fn new(inner: W, limit: u64) -> Self {
+        Self { inner, remaining: limit, tripped: false }
+    }
+}
+
+impl<W: Write> Write for CappedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.len() as u64 > self.remaining {
+            self.tripped = true;
+            return Err(io::Error::other("decompressed output exceeded --max-size"));
+        }
+        let n = self.inner.write(buf)?;
+        self.remaining -= n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 #[cfg(test)]
@@ -343,7 +408,7 @@ mod tests {
         let staged = dir.path().join("staged.zst");
         fs::write(&staged, &buf).unwrap();
         let mut plain = Vec::new();
-        let fmt = decompress_to_writer(&staged, &mut plain).unwrap();
+        let fmt = decompress_to_writer(&staged, &mut plain, None).unwrap();
         assert_eq!(fmt, Format::Zstd);
         assert_eq!(plain, PAYLOAD);
     }
@@ -375,5 +440,88 @@ mod tests {
         fs::write(&compressed, &bytes).unwrap();
 
         assert!(test_file(&compressed).is_err(), "corrupted archive must fail test");
+    }
+
+    // ---- new: decompression size cap ----
+
+    #[test]
+    fn max_size_aborts_when_output_exceeds_cap() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("bomb.txt");
+        // PAYLOAD is ~130 bytes; cap at 10 → decoder must abort.
+        fs::write(&src, PAYLOAD).unwrap();
+        let compressed =
+            compress_in_place(&src, Format::Zstd, None, Options::default()).unwrap();
+
+        let mut sink = Vec::new();
+        let err = decompress_to_writer(&compressed, &mut sink, Some(10)).unwrap_err();
+        match err {
+            Error::MaxSizeExceeded(10) => {}
+            other => panic!("expected MaxSizeExceeded(10), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn max_size_passes_when_output_fits() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("small.txt");
+        fs::write(&src, PAYLOAD).unwrap();
+        let compressed =
+            compress_in_place(&src, Format::Zstd, None, Options::default()).unwrap();
+
+        let mut sink = Vec::new();
+        decompress_to_writer(&compressed, &mut sink, Some(64 * 1024)).unwrap();
+        assert_eq!(sink, PAYLOAD);
+    }
+
+    #[test]
+    fn decompress_in_place_honors_max_size() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        fs::write(&src, PAYLOAD).unwrap();
+        let compressed =
+            compress_in_place(&src, Format::Gzip, None, Options::default()).unwrap();
+
+        let opts = Options { max_decompressed: Some(10), ..Options::default() };
+        let res = decompress_in_place(&compressed, opts);
+        assert!(matches!(res, Err(Error::MaxSizeExceeded(10))));
+        // On abort we must not leave a partial output file behind, and the
+        // compressed source must still be present (keep semantics on failure).
+        assert!(!dir.path().join("a.txt").exists(), "partial output not cleaned up");
+        assert!(compressed.exists(), "source removed on max-size failure");
+    }
+
+    // ---- new: symlink hardening (Unix only — Windows symlinks need admin) ----
+
+    #[cfg(unix)]
+    #[test]
+    fn force_replaces_symlink_rather_than_clobbering_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        fs::write(&src, PAYLOAD).unwrap();
+
+        // Victim file that must NOT be touched.
+        let victim = dir.path().join("victim.conf");
+        fs::write(&victim, b"DO NOT TOUCH\n").unwrap();
+
+        // Pre-plant a symlink at the output path pointing at the victim.
+        let out_path = dir.path().join("a.txt.zst");
+        symlink(&victim, &out_path).unwrap();
+
+        let opts = Options { force: true, ..Options::default() };
+        compress_in_place(&src, Format::Zstd, None, opts).unwrap();
+
+        // Victim must be untouched; the symlink must now be a regular file
+        // containing zstd data.
+        assert_eq!(fs::read(&victim).unwrap(), b"DO NOT TOUCH\n");
+        let meta = fs::symlink_metadata(&out_path).unwrap();
+        assert!(
+            meta.file_type().is_file(),
+            "output path must be a regular file, not a symlink"
+        );
+        let bytes = fs::read(&out_path).unwrap();
+        assert_eq!(&bytes[..4], &[0x28, 0xB5, 0x2F, 0xFD]);
     }
 }
