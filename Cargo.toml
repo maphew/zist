@@ -2,7 +2,7 @@
 name = "zist"
 version = "0.1.0"
 edition = "2021"
-description = "Format-agnostic in-place (de)compression wrappers. argv[0] dispatches zist/unzist."
+description = "Format-agnostic in-place (de)compression wrappers with zist and unzist."
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/maphew/zist"
@@ -12,8 +12,8 @@ categories = ["command-line-utilities", "compression"]
 [dependencies]
 zstd = { version = "0.13", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-xz2 = "0.1"
-bzip2 = "0.4"
+xz2 = { version = "0.1", features = ["static"] }
+bzip2 = { version = "0.4", features = ["static"] }
 glob = "0.3"
 
 [dev-dependencies]

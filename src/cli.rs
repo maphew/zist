@@ -46,17 +46,14 @@ struct Cli {
     files: Vec<PathBuf>,
 }
 
-// The binary's own name selects mode and default format. `unzist` flips to
-// decompress; `gzist`/`xzist`/`bzist` compress with gzip/xz/bz2. `-d`, `-z`,
-// and `--format` always override these hints.
-fn defaults_from_argv0(argv0: &Path) -> (Mode, Option<Format>) {
+// The binary's own name selects the default mode. `unzist` flips to
+// decompress; everything else behaves like `zist`. `-d`, `-z`, and
+// `--format` / `-F` always override these hints.
+fn defaults_from_argv0(argv0: &Path) -> Mode {
     let stem = argv0.file_stem().and_then(|s| s.to_str()).unwrap_or("zist");
     match stem.to_ascii_lowercase().as_str() {
-        "unzist" => (Mode::Decompress, None),
-        "gzist" => (Mode::Compress, Some(Format::Gzip)),
-        "xzist" => (Mode::Compress, Some(Format::Xz)),
-        "bzist" => (Mode::Compress, Some(Format::Bzip2)),
-        _ => (Mode::Compress, None),
+        "unzist" => Mode::Decompress,
+        _ => Mode::Compress,
     }
 }
 
@@ -66,16 +63,12 @@ fn program_name(argv0: &Path) -> String {
 
 fn run(argv0: &OsString, args: &[OsString]) -> Result<(), u8> {
     let argv0_path = Path::new(argv0);
-    let (default_mode, default_format) = defaults_from_argv0(argv0_path);
+    let default_mode = defaults_from_argv0(argv0_path);
     let prog = program_name(argv0_path);
-    let mut cli = parse_args(args)?;
-    if cli.format.is_none() {
-        cli.format = default_format;
-    }
+    let cli = parse_args(args)?;
 
     if cli.help {
-        let effective_default = cli.format.unwrap_or(Format::Zstd);
-        print_help(cli.mode.unwrap_or(default_mode), &prog, effective_default);
+        print_help(cli.mode.unwrap_or(default_mode), &prog, Format::Zstd);
         return Ok(());
     }
     if cli.version {
@@ -249,7 +242,7 @@ fn parse_args(args: &[OsString]) -> Result<Cli, u8> {
                 // bare `-`: treat as filename (we don't support stdin input yet).
                 cli.files.push(PathBuf::from(a));
             } else {
-                parse_short(short, &mut cli)?;
+                parse_short(short, &mut cli, &mut it)?;
             }
         } else {
             cli.files.push(PathBuf::from(a));
@@ -292,8 +285,13 @@ fn parse_long(
     Ok(())
 }
 
-fn parse_short(short: &str, cli: &mut Cli) -> Result<(), u8> {
-    for c in short.chars() {
+fn parse_short(
+    short: &str,
+    cli: &mut Cli,
+    it: &mut std::slice::Iter<'_, OsString>,
+) -> Result<(), u8> {
+    let mut chars = short.chars().peekable();
+    while let Some(c) = chars.next() {
         match c {
             'h' => cli.help = true,
             'V' => cli.version = true,
@@ -306,6 +304,16 @@ fn parse_short(short: &str, cli: &mut Cli) -> Result<(), u8> {
             'r' => cli.recursive = true,
             'd' => cli.mode = Some(Mode::Decompress),
             'z' => cli.mode = Some(Mode::Compress),
+            'F' => {
+                let attached: String = chars.collect();
+                let v = if attached.is_empty() {
+                    take_value("format", None, it)?
+                } else {
+                    attached
+                };
+                cli.format = Some(v.parse().map_err(|_| err("unknown format (zstd|gz|xz|bz2)"))?);
+                break;
+            }
             '1'..='9' => {
                 cli.level = Some(c.to_digit(10).unwrap() as i32);
                 // If there are trailing characters they should also be valid flags.
@@ -342,7 +350,7 @@ fn print_help(mode: Mode, prog: &str, default_fmt: Format) {
             "{prog} {VERSION} - compress files in place (format-agnostic)\n\n\
              usage: {prog} [OPTIONS] FILE...\n\n\
              options:\n\
-             \x20     --format {{zstd|gz|xz|bz2}}  compression format (default: {default_fmt})\n\
+             \x20 -F, --format {{zstd|gz|xz|bz2}}  compression format (default: {default_fmt})\n\
              \x20     --level N                   compression level\n\
              \x20 -1 .. -9                         level shortcut\n\
              \x20 -k, --keep                       keep source file\n\

@@ -44,6 +44,42 @@ fn format_long_flag_selects_gzip() {
 }
 
 #[test]
+fn format_short_flag_selects_xz() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("a.txt");
+    fs::write(&src, PAYLOAD).unwrap();
+
+    Command::cargo_bin("zist")
+        .unwrap()
+        .args(["-F", "xz"])
+        .arg(&src)
+        .assert()
+        .success();
+
+    let out = dir.path().join("a.txt.xz");
+    assert!(out.exists());
+    assert_eq!(&fs::read(&out).unwrap()[..6], &[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]);
+}
+
+#[test]
+fn format_short_flag_accepts_attached_value() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("a.txt");
+    fs::write(&src, PAYLOAD).unwrap();
+
+    Command::cargo_bin("zist")
+        .unwrap()
+        .arg("-Fbz2")
+        .arg(&src)
+        .assert()
+        .success();
+
+    let out = dir.path().join("a.txt.bz2");
+    assert!(out.exists());
+    assert_eq!(&fs::read(&out).unwrap()[..3], b"BZh");
+}
+
+#[test]
 fn unknown_format_errors() {
     let dir = tempdir().unwrap();
     let src = dir.path().join("a.txt");
@@ -304,52 +340,12 @@ fn recursive_flag_compresses_tree() {
 }
 
 #[test]
-fn gzist_defaults_to_gzip() {
+fn explicit_format_overrides_default_zstd() {
     let dir = tempdir().unwrap();
     let src = dir.path().join("a.txt");
     fs::write(&src, PAYLOAD).unwrap();
 
-    Command::cargo_bin("gzist").unwrap().arg(&src).assert().success();
-
-    let out = dir.path().join("a.txt.gz");
-    assert!(out.exists());
-    assert_eq!(&fs::read(&out).unwrap()[..2], &[0x1F, 0x8B]);
-}
-
-#[test]
-fn xzist_defaults_to_xz() {
-    let dir = tempdir().unwrap();
-    let src = dir.path().join("a.txt");
-    fs::write(&src, PAYLOAD).unwrap();
-
-    Command::cargo_bin("xzist").unwrap().arg(&src).assert().success();
-
-    let out = dir.path().join("a.txt.xz");
-    assert!(out.exists());
-    assert_eq!(&fs::read(&out).unwrap()[..6], &[0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]);
-}
-
-#[test]
-fn bzist_defaults_to_bz2() {
-    let dir = tempdir().unwrap();
-    let src = dir.path().join("a.txt");
-    fs::write(&src, PAYLOAD).unwrap();
-
-    Command::cargo_bin("bzist").unwrap().arg(&src).assert().success();
-
-    let out = dir.path().join("a.txt.bz2");
-    assert!(out.exists());
-    assert_eq!(&fs::read(&out).unwrap()[..3], b"BZh");
-}
-
-#[test]
-fn explicit_format_overrides_argv0_hint() {
-    let dir = tempdir().unwrap();
-    let src = dir.path().join("a.txt");
-    fs::write(&src, PAYLOAD).unwrap();
-
-    // gzist invoked with --format xz must produce xz, not gzip.
-    Command::cargo_bin("gzist")
+    Command::cargo_bin("zist")
         .unwrap()
         .args(["--format", "xz"])
         .arg(&src)
@@ -357,7 +353,7 @@ fn explicit_format_overrides_argv0_hint() {
         .success();
 
     assert!(dir.path().join("a.txt.xz").exists());
-    assert!(!dir.path().join("a.txt.gz").exists());
+    assert!(!dir.path().join("a.txt.zst").exists());
 }
 
 #[test]
