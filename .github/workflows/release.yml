@@ -48,13 +48,16 @@ jobs:
           set -euo pipefail
           asset_dir="zist-${GITHUB_REF_NAME}-${{ matrix.archive_suffix }}"
           if [ "${{ matrix.package_kind }}" = "zip" ]; then
-            archive_name="${asset_dir}.zip"
+            ext="zip"
           else
-            archive_name="${asset_dir}.tar.gz"
+            ext="tar.gz"
           fi
+          archive_name="${asset_dir}.${ext}"
+          stable_name="zist-${{ matrix.archive_suffix }}.${ext}"
           {
             echo "ASSET_DIR=$asset_dir"
             echo "ARCHIVE_NAME=$archive_name"
+            echo "STABLE_NAME=$stable_name"
           } >> "$GITHUB_ENV"
 
       - name: Stage Unix release archive
@@ -69,6 +72,7 @@ jobs:
             cp "target/${{ matrix.target }}/release/$bin" "$dir/$bin"
           done
           tar -czf "$ARCHIVE_NAME" "$dir"
+          cp "$ARCHIVE_NAME" "$STABLE_NAME"
 
       - name: Stage Windows release archive
         if: matrix.package_kind == 'zip'
@@ -81,11 +85,14 @@ jobs:
             Copy-Item "target/${{ matrix.target }}/release/$bin.exe" -Destination "$dir/$bin.exe"
           }
           Compress-Archive -Path $dir -DestinationPath $env:ARCHIVE_NAME -Force
+          Copy-Item $env:ARCHIVE_NAME -Destination $env:STABLE_NAME
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: ${{ env.ARCHIVE_NAME }}
+          path: |
+            ${{ env.ARCHIVE_NAME }}
+            ${{ env.STABLE_NAME }}
 
   publish:
     needs: build

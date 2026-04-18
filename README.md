@@ -9,7 +9,7 @@ zist big.log                # -> big.log.zst
 zist -F gz big.log          # -> big.log.gz
 zist -F xz -9 big.log       # -> big.log.xz, level 9
 unzist big.log.zst          # -> big.log (format detected by magic bytes)
-unzist -t archive.tar.gz    # verify integrity, no writes
+unzist -t big.log.zst       # verify compression integrity, no writes
 ```
 
 ## Features
@@ -31,6 +31,24 @@ unzist -t archive.tar.gz    # verify integrity, no writes
   written; `-k` keeps the source.
 
 ## Install
+
+Prebuilt binaries (Linux x86_64, macOS arm64, Windows x86_64) are attached to
+each [release](https://github.com/maphew/zist/releases). Stable filenames let
+you always grab the latest:
+
+```sh
+# Linux x86_64
+curl -L https://github.com/maphew/zist/releases/latest/download/zist-x86_64-unknown-linux-gnu.tar.gz | tar xz
+
+# macOS arm64 (Apple Silicon)
+curl -L https://github.com/maphew/zist/releases/latest/download/zist-aarch64-apple-darwin.tar.gz | tar xz
+```
+
+Windows: download `zist-x86_64-pc-windows-msvc.zip` from the releases page,
+extract, and put `zist.exe` / `unzist.exe` on your `PATH`.
+
+Each archive extracts to a directory containing `zist`, `unzist`, `README.md`,
+and `LICENSE`. Move the two binaries onto your `PATH` (e.g. `/usr/local/bin/`).
 
 From source:
 
@@ -88,7 +106,6 @@ Produces `target/release/zist` and `target/release/unzist`.
 GitHub Actions builds and tests native binaries for:
 
 - `x86_64-unknown-linux-gnu`
-- `x86_64-apple-darwin`
 - `aarch64-apple-darwin`
 - `x86_64-pc-windows-msvc`
 
