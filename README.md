@@ -46,7 +46,7 @@ Examples:
 zist file.txt              # default zstd
 zist -F gz file.txt        # gzip
 zist --format bz2 file.txt # bzip2
-unzist file.txt.gz
+unzist file0.txt.zstd file1.txt.gz file2.txt.bz2
 ```
 
 ## Usage
