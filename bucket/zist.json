@@ -1,0 +1,29 @@
+{
+    "version": "0.1.2",
+    "description": "Format-agnostic, in-place (de)compression wrappers: zist compresses, unzist decompresses (zstd/gzip/xz/bz2).",
+    "homepage": "https://github.com/maphew/zist",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/maphew/zist/releases/download/v0.1.2/zist-v0.1.2-x86_64-pc-windows-msvc.zip",
+            "hash": "7fb20b8afc587d362169a683d38152ea60d4f3f1e53d595124a48a1f09dbdf14",
+            "extract_dir": "zist-v0.1.2-x86_64-pc-windows-msvc"
+        }
+    },
+    "bin": [
+        "zist.exe",
+        "unzist.exe"
+    ],
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/maphew/zist/releases/download/v$version/zist-v$version-x86_64-pc-windows-msvc.zip",
+                "extract_dir": "zist-v$version-x86_64-pc-windows-msvc",
+                "hash": {
+                    "url": "$url.sha256"
+                }
+            }
+        }
+    }
+}

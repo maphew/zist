@@ -50,6 +50,13 @@ extract, and put `zist.exe` / `unzist.exe` on your `PATH`.
 Each archive extracts to a directory containing `zist`, `unzist`, `README.md`,
 and `LICENSE`. Move the two binaries onto your `PATH` (e.g. `/usr/local/bin/`).
 
+Windows via [Scoop](https://scoop.sh):
+
+```pwsh
+scoop bucket add zist https://github.com/maphew/zist
+scoop install zist/zist
+```
+
 From source:
 
 ```sh
