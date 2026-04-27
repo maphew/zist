@@ -383,12 +383,18 @@ fn glob_with_no_matches_errors_per_file() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("keep.txt"), PAYLOAD).unwrap();
 
-    Command::cargo_bin("zist")
+    let assert = Command::cargo_bin("zist")
         .unwrap()
         .current_dir(dir.path())
         .arg("*.nope")
         .assert()
         .failure();
 
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr.contains("no files match pattern"),
+        "expected clean glob error, got: {stderr}"
+    );
+    assert!(stderr.contains("*.nope"), "expected pattern in error, got: {stderr}");
     assert!(dir.path().join("keep.txt").exists());
 }

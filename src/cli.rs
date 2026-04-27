@@ -88,10 +88,14 @@ fn run(argv0: &OsString, args: &[OsString]) -> Result<(), u8> {
         return Err(err("--stdout and --test are mutually exclusive"));
     }
 
-    let files = expand_globs(cli.files.clone());
+    let (files, unmatched) = expand_globs(cli.files.clone());
+    let mut had_error = false;
+    for pat in &unmatched {
+        eprintln!("error: no files match pattern: {}", pat.display());
+        had_error = true;
+    }
     let files = if cli.recursive { expand_recursive(&files) } else { files };
 
-    let mut had_error = false;
     for f in &files {
         if let Err(e) = process_one(f, mode, &cli) {
             eprintln!("{}: {}", f.display(), e);
@@ -165,10 +169,14 @@ fn report(cli: &Cli, msg: &str) {
 // Expand glob patterns in-process so Windows shells (cmd, PowerShell, Nushell)
 // get the same `zist *.txt` UX that POSIX shells give for free. A literal match
 // on disk always wins, so filenames containing `[`/`?` on Unix still work.
-// Patterns that match nothing are passed through unchanged, producing the usual
-// "no such file" error with the pattern text the user typed.
-fn expand_globs(inputs: Vec<PathBuf>) -> Vec<PathBuf> {
+// Returns the expanded files plus a list of patterns that matched nothing, so
+// the caller can report a clean "no files match pattern" error rather than
+// passing the literal pattern through to the OS (which on Windows produces a
+// confusing "filename, directory name, or volume label syntax is incorrect"
+// error because `*` and `?` are not legal in paths).
+fn expand_globs(inputs: Vec<PathBuf>) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut out = Vec::with_capacity(inputs.len());
+    let mut unmatched = Vec::new();
     for p in inputs {
         if p.exists() || !has_glob_meta(&p) {
             out.push(p);
@@ -185,13 +193,13 @@ fn expand_globs(inputs: Vec<PathBuf>) -> Vec<PathBuf> {
                     out.push(entry);
                 }
                 if out.len() == start {
-                    out.push(p);
+                    unmatched.push(p);
                 }
             }
-            Err(_) => out.push(p),
+            Err(_) => unmatched.push(p),
         }
     }
-    out
+    (out, unmatched)
 }
 
 fn has_glob_meta(p: &Path) -> bool {
@@ -395,10 +403,16 @@ fn print_help(mode: Mode, prog: &str, default_fmt: Format) {
              \x20 -f, --force                      overwrite existing output\n\
              \x20 -v, --verbose                    emit per-file summary on stderr\n\
              \x20 -q, --quiet                      suppress per-file summary\n\
-             \x20 -r, --recursive                  descend directories\n\
+             \x20 -r, --recursive                  descend directories named on the command line\n\
              \x20 -d, --decompress                 decompress (same as unzist)\n\
              \x20 -h, --help                       show this help\n\
-             \x20 -V, --version                    print version\n"
+             \x20 -V, --version                    print version\n\n\
+             globbing:\n\
+             \x20 Glob patterns are expanded internally so cmd/PowerShell/Nushell\n\
+             \x20 get the same UX as POSIX shells. `*` and `?` match within one\n\
+             \x20 directory level; use `**` to recurse, e.g. `{prog} **/*.log`.\n\
+             \x20 `-r` only descends into directory arguments — it does not turn\n\
+             \x20 a flat glob into a recursive one.\n"
         ),
         Mode::Decompress => println!(
             "{prog} {VERSION} - decompress files in place (format auto-detected)\n\n\
@@ -412,10 +426,16 @@ fn print_help(mode: Mode, prog: &str, default_fmt: Format) {
              \x20                                  (accepts k/M/G/T suffix, base 1024)\n\
              \x20 -v, --verbose                    emit per-file summary on stderr\n\
              \x20 -q, --quiet                      suppress per-file summary\n\
-             \x20 -r, --recursive                  descend directories\n\
+             \x20 -r, --recursive                  descend directories named on the command line\n\
              \x20 -z, --compress                   compress (same as zist)\n\
              \x20 -h, --help                       show this help\n\
-             \x20 -V, --version                    print version\n"
+             \x20 -V, --version                    print version\n\n\
+             globbing:\n\
+             \x20 Glob patterns are expanded internally so cmd/PowerShell/Nushell\n\
+             \x20 get the same UX as POSIX shells. `*` and `?` match within one\n\
+             \x20 directory level; use `**` to recurse, e.g. `{prog} **/*.zst`.\n\
+             \x20 `-r` only descends into directory arguments — it does not turn\n\
+             \x20 a flat glob into a recursive one.\n"
         ),
     }
 }
