@@ -100,7 +100,7 @@ jobs:
             "$h  $name" | Set-Content -Encoding ascii "$name.sha256"
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: |
