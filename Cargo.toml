@@ -10,7 +10,7 @@ keywords = ["compression", "decompression", "cli", "zstd", "gzip"]
 categories = ["command-line-utilities", "compression"]
 
 [dependencies]
-zstd = { version = "0.13", default-features = false }
+zstd = { version = "0.14", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 xz2 = { version = "0.1", features = ["static"] }
 bzip2 = { version = "0.6", features = ["static"] }
